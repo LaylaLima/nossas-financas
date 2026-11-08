@@ -1,5 +1,5 @@
 // "Inteligência" do app: análises automáticas feitas no próprio aparelho (os dados nunca saem descriptografados).
-import { val, isPaid, r2, monthStats, MESES_LONGOS } from './data.js';
+import { val, isPaid, r2, monthStats, MESES_LONGOS, cardUse } from './data.js';
 import { brl } from './charts.js';
 
 const shift = (m, k) => { const [y, mo] = m.split('-').map(Number); const d = new Date(y, mo - 1 + k, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
@@ -81,13 +81,19 @@ export function analyze(model, m, today = new Date()) {
       if (days < 0) { out.push({ level: 'bad', icon: '⏰', text: `A fatura do <b>${esc(c.name)}</b> (${brl(v)}) venceu dia ${c.due} e não está marcada como paga.` }); score -= 20; }
       else if (days <= 5) { out.push({ level: 'warn', icon: '📅', text: `A fatura do <b>${esc(c.name)}</b> (${brl(v)}) vence ${days === 0 ? '<b>hoje</b>' : `em <b>${days} dia${days > 1 ? 's' : ''}</b>`}.` }); score -= 5; }
     }
-    if (c.limit && v / c.limit >= 0.8) { out.push({ level: 'warn', icon: '💳', text: `O <b>${esc(c.name)}</b> está com <b>${Math.round(v / c.limit * 100)}% do limite</b> usado.` }); score -= 10; }
     const hist = [1, 2, 3].map(k => val(c, shift(m, -k))).filter(x => x > 0);
     const a = avg(hist);
     if (hist.length >= 2 && v > a * 1.25 && v - a > 100) {
       out.push({ level: 'warn', icon: '📈', text: `A fatura do <b>${esc(c.name)}</b> está <b>${Math.round((v / a - 1) * 100)}% acima</b> da média dos últimos meses (+${brl(v - a)}).` });
       score -= 5;
     }
+  }
+
+  // 3b) Limite dos cartões
+  for (const c of model.cards) {
+    const u = cardUse(c); if (!u.lim) continue;
+    if (u.avail < 0) { out.push({ level: 'bad', icon: '💳', text: `O <b>${esc(c.name)}</b> passou do limite em <b>${brl(-u.avail)}</b> (usado ${brl(u.used)} de ${brl(u.lim)}).` }); score -= 15; }
+    else if (u.pct >= 0.8) { out.push({ level: 'warn', icon: '💳', text: `O <b>${esc(c.name)}</b> está com <b>${Math.round(u.pct * 100)}% do limite</b> usado. Disponível: ${brl(u.avail)}.` }); score -= 8; }
   }
 
   // 4) Categorias acima do normal

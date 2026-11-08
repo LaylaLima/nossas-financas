@@ -1,6 +1,6 @@
 # ✦ Nossas Finanças
 
-Visual nas cores do casamento: verde oliva, champagne, off-white e dourado. Os títulos usam a fonte Cormorant Garamond e os textos a Jost, as duas do Google Fonts.
+Visual nas cores do casamento: verde oliva, champagne, off-white e dourado. Os títulos usam a fonte Cormorant Garamond e os textos a Jost, as duas do Google Fonts. Tem modo claro, escuro ou automático: use o botão ☀/☾ no topo ou vá em Ajustes > Aparência.
 
 App de finanças do casal, com **criptografia de ponta a ponta**: lançamentos, divisão de contas, resumo do mês e metas.
 
@@ -15,6 +15,7 @@ App de finanças do casal, com **criptografia de ponta a ponta**: lançamentos, 
   - **🛋️ Enxoval:** as listas de compras da casa.
 
   Tudo o que é pago no cartão entra na fatura daquele cartão (e as parcelas nas faturas seguintes). O que é pago em PIX, dinheiro, débito ou boleto, e as parcelas do terreno, entram sozinhos no Orçamento, na categoria "Terreno e obra".
+- **Limite dos cartões:** informe o limite total de cada cartão. O disponível diminui com as compras lançadas (parcelas futuras também ocupam o limite) e volta quando a fatura é marcada como paga. O botão "conferir com o banco" acerta o valor com o app do banco. No topo aparece o total somando todos os cartões.
 - **Gastos detalhados de cada cartão** (botão 🧾 em cada cartão): escreva do seu jeito, por exemplo *"dia 03/11 500 paçoca, 700 2x calças, 400 pasta de dente"* ou *"tv 1200 em 3x"*. O app:
   - separa os itens, a data e as parcelas;
   - coloca a categoria sozinho (🍫 Alimentação, 👖 Roupas, 🧴 Higiene…) e aprende com as correções de vocês;

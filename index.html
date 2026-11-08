@@ -6,6 +6,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://cdn.jsdelivr.net; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
   <meta name="referrer" content="no-referrer">
   <title>Nossas Finanças</title>
+  <script src="theme.js"></script>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icon-192.png">
@@ -19,7 +20,7 @@
 <body>
   <header class="top">
     <h1><span class="orn">✦</span>Nossas Finanças</h1>
-    <span id="mode" class="badge"></span>
+    <div class="top-r"><span id="mode" class="badge"></span><button id="themeBtn" class="theme-btn" type="button" aria-label="Alternar claro/escuro"></button></div>
   </header>
   <main id="app"><p class="center muted">Carregando…</p></main>
   <div id="toast" class="toast" role="status" hidden></div>

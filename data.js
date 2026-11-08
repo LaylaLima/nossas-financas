@@ -38,6 +38,16 @@ export const val = (line, m) => Number(line?.vals?.[m]?.v) || 0;
 export const isPaid = (line, m) => !!line?.vals?.[m]?.p;
 export const r2 = (n) => Math.round(n * 100) / 100;
 
+// Limite do cartão: "usado" = tudo que ainda não foi pago (faturas em aberto + parcelas futuras).
+// Marcar a fatura como paga libera o limite. limAdj = ajuste para bater com o app do banco.
+export function cardUse(c) {
+  const lim = Number(c?.limit) || 0;
+  let raw = 0;
+  for (const x of Object.values(c?.vals || {})) if (x && !x.p && Number(x.v) > 0) raw += Number(x.v);
+  const used = r2(Math.max(0, raw - (Number(c?.limAdj) || 0)));
+  return { lim, raw: r2(raw), used, avail: r2(lim - used), pct: lim ? used / lim : 0 };
+}
+
 export function monthStats(model, m) {
   const byGroup = model.groups.map(g => {
     const lines = model.linesOf(g.id);

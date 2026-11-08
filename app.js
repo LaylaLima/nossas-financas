@@ -1,6 +1,6 @@
 import { authPassword, deriveKEK, inviteKey, importDataKey, encryptBytes, decryptBytes, encryptJSON, decryptJSON, randomBytes, newSalt, b64url, unb64url } from './crypto.js';
 import { createBackend } from './backend.js';
-import { MESES, MESES_LONGOS, WISH_LISTS, EXTRA_COLORS, templateItems, val, isPaid, r2, monthStats, yearStats, parsePlanilha } from './data.js';
+import { MESES, MESES_LONGOS, WISH_LISTS, EXTRA_COLORS, templateItems, val, isPaid, r2, monthStats, yearStats, parsePlanilha, cardUse } from './data.js';
 import { brl, donut, hbars, timeChart, gauge } from './charts.js';
 import { analyze, parseQuick, incomeStats } from './insights.js';
 import { BUY_CATS, catOf, categorize, parseItems, parcelIn, parcelIdx, monthsOf, isoToday } from './buys.js';
@@ -105,6 +105,26 @@ async function saveMany(objs, what) {
 }
 const save = (o, what) => saveMany([o], what);
 async function removeMany(ids) { if (!ids.length) return; await S.be.deleteItems(ids); ids.forEach(id => S.items.delete(id)); }
+
+/* ================= tema claro/escuro ================= */
+const SUN = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
+const MOON = '<svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>';
+const sysDark = () => matchMedia('(prefers-color-scheme: dark)').matches;
+const themePref = () => LS.get('theme') || 'auto';
+const isDark = () => { const t = themePref(); return t === 'dark' || (t === 'auto' && sysDark()); };
+function setTheme(t) {
+  LS.set('theme', t);
+  if (t === 'auto') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', t);
+  paintTheme();
+}
+function paintTheme() {
+  const b = $('#themeBtn'); if (b) { b.innerHTML = isDark() ? SUN : MOON; b.title = isDark() ? 'Deixar claro' : 'Deixar escuro'; }
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', isDark() ? '#1A1C13' : '#FAF7F0');
+  $$('[data-theme-opt]').forEach(x => x.classList.toggle('on', x.dataset.themeOpt === themePref()));
+}
+$('#themeBtn')?.addEventListener('click', () => setTheme(isDark() ? 'light' : 'dark'));
+matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', paintTheme);
+paintTheme();
 
 /* ================= fluxo de acesso ================= */
 async function start() {
@@ -309,7 +329,7 @@ function paintPresence() {
   el.classList.remove('warn');
   el.textContent = S.online.length ? `🟢 ${partnerName()} online` : S.live ? '🔒 ao vivo' : '🔒 criptografado';
 }
-const typing = () => { const a = document.activeElement; return a && app.contains(a) && /INPUT|SELECT|TEXTAREA/.test(a.tagName); };
+const typing = () => { const a = document.activeElement; return !!a && app.contains(a) && (/SELECT|TEXTAREA/.test(a.tagName) || (a.tagName === 'INPUT' && !/checkbox|radio|range|button|file/.test(a.type))); };
 let renderT = null;
 function scheduleRender() {
   if (!S.dk) return;
@@ -382,7 +402,7 @@ function tabPainel(root) {
   const cardColors = ['#5B6B3A', '#B8954A', '#8C7AA0', '#6E9A8C', '#C07A3E', '#C48A8A', '#9A9480', '#D4B26A', '#3F4A26', '#A88B5A'];
   const cardData = cards.map((x, i) => ({
     label: x.c.name + (x.paid ? ' ✓' : ''), value: x.v, color: cardColors[i % cardColors.length], max: x.c.limit || 0,
-    extra: [x.c.limit ? `${Math.round(x.v / x.c.limit * 100)}% do limite de ${brl(x.c.limit)}` : '', x.pv ? `${x.v >= x.pv ? '▲' : '▼'} ${brl(Math.abs(x.v - x.pv))} vs mês anterior` : ''].filter(Boolean).join(' · ')
+    extra: [x.c.limit ? `disponível ${brl(cardUse(x.c).avail)} de ${brl(x.c.limit)}` : '', x.pv ? `${x.v >= x.pv ? '▲' : '▼'} ${brl(Math.abs(x.v - x.pv))} vs mês anterior` : ''].filter(Boolean).join(' · ')
   }));
   const labels = MESES.map(m => m[0].toUpperCase() + m.slice(1));
   const wishAll = WISH_LISTS.flatMap(l => model.wishes(l.key));
@@ -454,6 +474,8 @@ function tabPainel(root) {
 
   <section class="card">
     <div class="card-h"><h3>Cartões em ${mShort(S.month)}</h3>${chartToggle('cards', [['barras', 'Barras'], ['rosca', 'Rosca']], pCard)}</div>
+    ${(() => { const L = limitTotals(); return L.n ? `<div class="lim-sum"><div class="lim-top"><span>Limite disponível (todos os cartões)</span><b class="${L.avail < 0 ? 'neg' : ''}">${brl(L.avail)}</b></div>
+      <div class="prog small ${L.pct > .8 ? 'warn' : ''}"><i style="width:${Math.min(100, L.pct * 100).toFixed(1)}%"></i></div><small class="muted">Usado ${brl(L.used)} de ${brl(L.lim)} (${Math.round(L.pct * 100)}%)</small></div>` : ''; })()}
     ${cards.length ? (pCard === 'rosca' ? donut(cardData, brl(cardTotal).replace(',00', ''), 'nos cartões') : hbars(cardData, { showZero: true })) : '<p class="muted">Nenhum cartão cadastrado.</p>'}
   </section>
 
@@ -563,6 +585,15 @@ async function setVal(lineId, m, patch) {
   await save({ ...l, vals }, what);
 }
 // Recalcula a fatura pela soma dos gastos detalhados (só se a fatura estiver vazia ou já for automática)
+// Fatura com valor digitado à mão: compra nova soma nela (e compra apagada subtrai), assim o limite acompanha
+function addToManual(card, buys, sign) {
+  const vals = { ...(card.vals || {}) };
+  for (const b of buys) for (const m of monthsOf(b)) {
+    const cur = vals[m];
+    if (cur && !cur.auto && Number(cur.v) > 0) vals[m] = { ...cur, v: r2(Math.max(0, Number(cur.v) + sign * parcelIn(b, m))) };
+  }
+  return { ...card, vals };
+}
 function cardWithSums(card, months, buys) { return lineWithSums(card, months, buys.filter(b => b.card === card.id)); }
 function lineWithSums(card, months, buys) {
   const vals = { ...(card.vals || {}) };
@@ -688,6 +719,20 @@ function tabOrcamento(root) {
 }
 
 /* ---------- CARTÕES ---------- */
+function limitTotals() {
+  const us = model.cards.map(cardUse).filter(u => u.lim);
+  const lim = r2(us.reduce((s, u) => s + u.lim, 0)), used = r2(us.reduce((s, u) => s + u.used, 0));
+  return { n: us.length, lim, used, avail: r2(lim - used), pct: lim ? used / lim : 0 };
+}
+function limitBlock(c) {
+  const u = cardUse(c);
+  if (!u.lim) return `<button class="link small lim-add" data-climfocus="${esc(c.id)}">+ informar o limite total deste cartão</button>`;
+  return `<div class="limit">
+    <div class="lim-top"><span>Limite disponível</span><b class="${u.avail < 0 ? 'neg' : ''}">${brl(u.avail)}</b></div>
+    <div class="prog small ${u.pct > .8 ? 'warn' : ''}"><i style="width:${Math.min(100, u.pct * 100).toFixed(1)}%"></i></div>
+    <small class="muted">Usado ${brl(u.used)} de ${brl(u.lim)} (${Math.round(u.pct * 100)}%) · volta quando marcar a fatura como paga · <button class="link small" data-cadj="${esc(c.id)}">conferir com o banco</button></small>
+  </div>`;
+}
 function tabCartoes(root) {
   if (S.cardView && S.items.get(S.cardView)) return tabCardDetail(root, S.items.get(S.cardView));
   S.cardView = null;
@@ -707,6 +752,8 @@ function tabCartoes(root) {
     <div class="hero-v" id="c-tot">${brl(total)}</div>
     <div class="hero-sub">${d == null ? '' : `${d > 0 ? '▲' : d < 0 ? '▼' : '='} ${Math.abs(d)}% vs ${mShort(pm)} (${brl(totalPrev)})`}</div>
     <div class="hero-split"><span>Pago <b id="c-pago">${brl(paid)}</b></span><span>A pagar <b id="c-falta">${brl(total - paid)}</b></span></div>
+    ${(() => { const L = limitTotals(); return L.n ? `<div class="hero-lim"><div class="hero-split"><span>Limite total <b>${brl(L.lim)}</b></span><span>Disponível <b>${brl(L.avail)}</b></span></div>
+      <div class="prog light"><i style="width:${Math.min(100, L.pct * 100).toFixed(1)}%"></i></div><div class="hero-sub">Usado ${brl(L.used)} (${Math.round(L.pct * 100)}%)${L.n < model.cards.length ? ` · ${L.n} de ${model.cards.length} cartões com limite informado` : ''}</div></div>` : ''; })()}
   </section>
   <p class="muted small center">Toque no valor para alterar. Os dois veem a mudança na hora.</p>
   <div class="cardgrid">
@@ -717,13 +764,13 @@ function tabCartoes(root) {
         <button class="icon del" data-cdel="${esc(c.id)}" aria-label="Excluir cartão">✕</button></div>
       <label class="cc-val">Fatura de ${mShort(S.month)}<span class="money-wrap">R$ ${moneyInput(c, S.month, 'big')}</span></label>
       ${pv ? `<small class="muted">Mês anterior: ${brl(pv)}</small>` : ''}
-      ${lim ? `<div class="limit"><div class="prog small ${v / lim > .8 ? 'warn' : ''}"><i style="width:${Math.min(100, v / lim * 100).toFixed(1)}%"></i></div><small>${Math.round(v / lim * 100)}% do limite (${brl(lim)})</small></div>` : ''}
+      ${limitBlock(c)}
       ${(() => { const bs = model.buysOf(c.id).filter(b => parcelIn(b, S.month) > 0); const det = r2(bs.reduce((s, b) => s + parcelIn(b, S.month), 0));
         return `<button class="btn small ghost full gastos-btn" data-cview="${esc(c.id)}">🧾 ${bs.length ? `${bs.length} gasto${bs.length > 1 ? 's' : ''} detalhado${bs.length > 1 ? 's' : ''} · ${brl(det)}` : 'Detalhar gastos desta fatura'} ›</button>
         ${bs.length && v && Math.abs(v - det) > 0.009 ? `<small class="muted">${v > det ? `${brl(v - det)} ainda sem detalhe` : `detalhado passa a fatura em ${brl(det - v)}`}</small>` : ''}`; })()}
       <div class="cc-f">
         <label class="paid"><input type="checkbox" data-paid="${esc(c.id)}" ${isPaid(c, S.month) ? 'checked' : ''}><span>fatura paga</span></label>
-        <label class="lim">Limite <input inputmode="decimal" data-climit="${esc(c.id)}" value="${lim ? num(lim) : ''}" placeholder="opcional"></label>
+        <label class="lim">Limite total <input inputmode="decimal" data-climit="${esc(c.id)}" value="${lim ? num(lim) : ''}" placeholder="R$"></label>
         <label class="lim">Vence dia <input class="due" type="number" min="1" max="31" inputmode="numeric" data-cdue="${esc(c.id)}" value="${esc(c.due || '')}" placeholder="—"></label>
       </div>
     </section>`;
@@ -741,15 +788,26 @@ function tabCartoes(root) {
     const p = r2(model.cards.reduce((s, c) => s + (isPaid(c, S.month) ? val(c, S.month) : 0), 0));
     $('#c-tot', root).textContent = brl(t); $('#c-pago', root).textContent = brl(p); $('#c-falta', root).textContent = brl(t - p);
     $$('[data-paid]', root).forEach(cb => cb.closest('.ccard').classList.toggle('is-paid', cb.checked));
+    scheduleRender(); // atualiza o limite disponível
   };
   bindValueInputs(root, refresh);
+  $$('[data-climfocus]', root).forEach(b => b.addEventListener('click', () => { const i = $(`[data-climit="${CSS.escape(b.dataset.climfocus)}"]`, root); i?.focus(); i?.scrollIntoView({ block: 'center' }); }));
+  $$('[data-cadj]', root).forEach(b => b.addEventListener('click', async () => {
+    const c = S.items.get(b.dataset.cadj), u = cardUse(c);
+    const ans = prompt(`Quanto o app do banco mostra de LIMITE DISPONÍVEL no ${c.name} agora?\n(O app calculou ${num(u.avail)})`, num(u.avail));
+    if (ans == null) return;
+    const bank = parseMoney(ans); if (Number.isNaN(bank)) return toast('Valor inválido.');
+    // ajuste = diferença entre o que o banco diz e o que o app calcula (antes de qualquer ajuste)
+    const adj = r2(bank - (u.lim - u.raw));
+    try { await save({ ...c, limAdj: adj || null }, `ajustou o limite disponível do ${c.name} para ${brl(bank)}`); toast('Limite ajustado com o banco.'); viewMain(); } catch (e) { toast(errMsg(e)); }
+  }));
   $$('[data-cview]', root).forEach(b => b.addEventListener('click', () => { S.cardView = b.dataset.cview; viewMain(); scrollTo(0, 0); }));
   $$('[data-cname]', root).forEach(inp => inp.addEventListener('change', async () => {
     const c = S.items.get(inp.dataset.cname); if (inp.value.trim()) await save({ ...c, name: inp.value.trim() }).catch(e => toast(errMsg(e)));
   }));
   $$('[data-climit]', root).forEach(inp => inp.addEventListener('change', async () => {
     const v = parseMoney(inp.value); if (Number.isNaN(v)) return toast('Valor inválido.');
-    const c = S.items.get(inp.dataset.climit); await save({ ...c, limit: v || null }).catch(e => toast(errMsg(e))); viewMain();
+    const c = S.items.get(inp.dataset.climit); await save({ ...c, limit: v || null }, `definiu o limite total do ${c.name}: ${brl(v)}`).catch(e => toast(errMsg(e))); viewMain();
   }));
   $$('[data-cdue]', root).forEach(inp => inp.addEventListener('change', async () => {
     const d = Number(inp.value); if (inp.value && !(d >= 1 && d <= 31)) return toast('Dia inválido (1 a 31).');
@@ -791,6 +849,7 @@ function tabCardDetail(root, c) {
     ${!auto && fat && list.length && Math.abs(fat - det) > 0.009 ? `<div class="hero-split"><span>${fat > det ? `Ainda sem detalhe: <b>${brl(fat - det)}</b>` : `O detalhado passa a fatura em <b>${brl(det - fat)}</b>`}</span></div>
       <button class="btn small light" id="usesum">Usar a soma dos gastos (${brl(det)}) como valor da fatura</button>` : ''}
     ${future ? `<div class="hero-sub">📆 Parcelas já marcadas para os próximos meses: <b>${brl(future)}</b></div>` : ''}
+    ${(() => { const u = cardUse(c); return u.lim ? `<div class="hero-split"><span>Limite disponível <b>${brl(u.avail)}</b></span><span>de ${brl(u.lim)}</span></div><div class="prog light"><i style="width:${Math.min(100, u.pct * 100).toFixed(1)}%"></i></div>` : ''; })()}
   </section>
 
   <section class="card">
@@ -831,7 +890,7 @@ function tabCardDetail(root, c) {
     if (!confirm(`Excluir "${b.desc}" (${brl(b.total)})${(b.n || 1) > 1 ? ' e todas as parcelas' : ''}?`)) return;
     try {
       await removeMany([b.id]);
-      await save(cardWithSums(S.items.get(c.id), monthsOf(b), model.buysOf(c.id)), `removeu "${b.desc}" do ${c.name}`);
+      await save(cardWithSums(addToManual(S.items.get(c.id), [b], -1), monthsOf(b), model.buysOf(c.id)), `removeu "${b.desc}" do ${c.name}`);
       viewMain();
     } catch (e) { toast(errMsg(e)); }
   }));
@@ -839,7 +898,7 @@ function tabCardDetail(root, c) {
   // prévia editável
   let rows = [], note = '';
   const fatOpts = [-1, 0, 1, 2].map(k => shiftMonth(m, k));
-  let fatM = m;
+  let fatM = isPaid(c, m) ? shiftMonth(m, 1) : m; // fatura já paga → a compra vai para a próxima
   const history = model.allBuys();
   const renderPrev = () => {
     const box = $('#prev', root);
@@ -857,6 +916,7 @@ function tabCardDetail(root, c) {
         <button type="button" class="icon del" data-rm="${i}" aria-label="Tirar">✕</button>
       </div>`).join('')}
       <div class="row wrap prev-f">
+        ${isPaid(c, m) ? `<small class="muted">A fatura de ${mShort(m)} já está paga, então estas compras entram na próxima.</small>` : ''}
         <label class="lim">Entra na fatura de <select id="fatm">${fatOpts.map(x => `<option value="${x}" ${x === fatM ? 'selected' : ''}>${mShort(x)}</option>`).join('')}</select></label>
         <b>Total: ${brl(sum)}</b>
       </div>
@@ -885,7 +945,7 @@ function tabCardDetail(root, c) {
       try {
         const buys = ok.map((r, k) => ({ id: crypto.randomUUID(), type: 'buy', card: c.id, date: r.date || isoToday(), desc: r.desc.trim(), cat: r.cat, total: r2(r.total), n: r.n || 1, first: fatM, order: Date.now() + k }));
         const months = buys.flatMap(monthsOf);
-        const updated = cardWithSums(S.items.get(c.id), months, [...model.buysOf(c.id), ...buys]);
+        const updated = cardWithSums(addToManual(S.items.get(c.id), buys, 1), months, [...model.buysOf(c.id), ...buys]);
         await saveMany([...buys, updated], `adicionou no ${c.name}: ${buys.map(b => `${b.desc} ${brl(b.total)}${b.n > 1 ? ` em ${b.n}x` : ''}`).join(', ')}`);
         toast(`✔ ${buys.length} gasto${buys.length > 1 ? 's' : ''} salvo${buys.length > 1 ? 's' : ''} no ${c.name}`);
         S.month = fatM; viewMain();
@@ -929,12 +989,18 @@ function obraSetupItems() {
   return out;
 }
 // Recalcula a linha que recebe um gasto: o cartão (se pago no cartão) ou a linha "Obra" do orçamento
-function affectedLines(buys, allBuys) {
+// changes: compras novas (sinal +1) ou removidas (sinal -1). Aceita também uma lista simples de compras (= +1).
+function affectedLines(buys, allBuys, sign = 1) {
+  const ch = buys.map(x => (x && x.b ? x : { b: x, sign }));
   const out = [];
-  const months = buys.flatMap(monthsOf);
-  const cardIds = new Set(buys.filter(b => b.card).map(b => b.card));
-  cardIds.forEach(id => { const c = S.items.get(id); if (c) out.push(cardWithSums(c, months, allBuys)); });
-  if (buys.some(b => !b.card && b.obra)) { const l = model.sysLine('obra'); if (l) out.push(lineWithSums(l, months, allBuys.filter(b => b.obra && !b.card))); }
+  const months = ch.flatMap(x => monthsOf(x.b));
+  const cardIds = new Set(ch.filter(x => x.b.card).map(x => x.b.card));
+  cardIds.forEach(id => {
+    let c = S.items.get(id); if (!c) return;
+    ch.filter(x => x.b.card === id).forEach(x => { c = addToManual(c, [x.b], x.sign); });
+    out.push(cardWithSums(c, months, allBuys));
+  });
+  if (ch.some(x => !x.b.card && x.b.obra)) { const l = model.sysLine('obra'); if (l) out.push(lineWithSums(l, months, allBuys.filter(b => b.obra && !b.card))); }
   return out;
 }
 
@@ -1085,7 +1151,8 @@ function viewObra(root) {
       try {
         const nb = ok.map((r, k) => {
           const card = r.pay.startsWith('card:') ? r.pay.slice(5) : null;
-          const first = card ? (r.date || isoToday()).slice(0, 7) : (r.date || isoToday()).slice(0, 7);
+          const dm = (r.date || isoToday()).slice(0, 7);
+          const first = card && isPaid(S.items.get(card), dm) ? shiftMonth(dm, 1) : dm; // fatura do mês já paga → próxima
           return { id: crypto.randomUUID(), type: 'buy', obra: true, card, pay: card ? 'cartao' : r.pay, date: r.date || isoToday(), desc: r.desc.trim(), cat: 'obra', okind: r.okind, etapa: r.etapa || null, loja: r.loja.trim(), total: r2(r.total), n: r.n || 1, first, order: Date.now() + k };
         });
         const all = [...model.allBuys(), ...nb];
@@ -1120,7 +1187,7 @@ function bindBuyDeletes(root) {
   $$('[data-obdel]', root).forEach(btn => btn.addEventListener('click', async () => {
     const b = S.items.get(btn.dataset.obdel);
     if (!confirm(`Excluir "${b.desc}" (${brl(b.total)})${(b.n || 1) > 1 ? ' e todas as parcelas' : ''}?`)) return;
-    try { await removeMany([b.id]); await saveMany(affectedLines([b], model.allBuys()), `removeu "${b.desc}" da obra`); viewMain(); } catch (e) { toast(errMsg(e)); }
+    try { await removeMany([b.id]); await saveMany(affectedLines([b], model.allBuys(), -1), `removeu "${b.desc}" da obra`); viewMain(); } catch (e) { toast(errMsg(e)); }
   }));
 }
 const brlShortTxt = (v) => brl(v).replace(/,\d\d$/, '');
@@ -1190,7 +1257,7 @@ function viewTerreno(root) {
         nt.entradaId = entB.id; out.push(entB);
       } else if (oldEnt) { await removeMany([oldEnt.id]); nt.entradaId = null; }
       const allBuys = [...model.allBuys().filter(x => x.id !== oldEnt?.id), ...(entB ? [entB] : [])];
-      const touched = [...(oldEnt ? [oldEnt] : []), ...(entB ? [entB] : [])];
+      const touched = [...(oldEnt ? [{ b: oldEnt, sign: -1 }] : []), ...(entB ? [{ b: entB, sign: 1 }] : [])];
       out.push(...affectedLines(touched, allBuys));
       // parcelas → linha "Parcela do terreno"
       const line = model.sysLine('terreno');
@@ -1259,6 +1326,15 @@ function tabCasamento(root) {
 async function tabAjustes(root) {
   const st = model.settings;
   root.innerHTML = `
+  <section class="card">
+    <h3>Aparência</h3>
+    <div class="theme-opts">
+      <button class="btn small ghost" data-theme-opt="light">☀ Claro</button>
+      <button class="btn small ghost" data-theme-opt="dark">☾ Escuro</button>
+      <button class="btn small ghost" data-theme-opt="auto">Automático</button>
+    </div>
+    <p class="muted small">Automático segue o modo do celular. Também dá para trocar pelo botão ☀/☾ no topo.</p>
+  </section>
   <section class="card">
     <h3>Nomes do casal</h3>
     <form id="f-names" class="grid">
@@ -1361,6 +1437,8 @@ async function tabAjustes(root) {
     busy(b, false);
   });
 
+  $$('[data-theme-opt]', root).forEach(b => b.addEventListener('click', () => setTheme(b.dataset.themeOpt)));
+  paintTheme();
   $('#f-names', root).addEventListener('submit', async (ev) => {
     ev.preventDefault();
     try { await save({ ...(st.raw || { type: 'settings' }), people: st.people, p1: ev.target.p1.value.trim(), p2: ev.target.p2.value.trim() }, 'atualizou os nomes'); toast('Nomes salvos!'); } catch (e) { toast(errMsg(e)); }
