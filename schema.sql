@@ -66,7 +66,13 @@ create policy it_delete on public.items for delete to authenticated using (publi
 revoke all on public.households, public.members, public.items from anon;
 -- garante que usuários logados possam usar as tabelas (as regras acima continuam valendo)
 grant usage on schema public to authenticated;
-grant select, insert, update, delete on public.households, public.members, public.items to authenticated;
+grant select, insert, update, delete on public.items to authenticated;
+grant select, insert on public.households, public.members to authenticated;
+-- segurança extra: só dá para alterar as colunas que o app usa
+-- (ninguém consegue trocar o cofre de uma pessoa nem o dono do cofre)
+revoke update on public.households, public.members from authenticated;
+grant update (invite_wrap) on public.households to authenticated;
+grant update (kek_salt, wrapped_key) on public.members to authenticated;
 grant execute on function public.is_member(uuid), public.member_count(uuid) to authenticated;
 
 -- Tempo real: o app recebe na hora as mudanças do outro (os dados continuam criptografados)

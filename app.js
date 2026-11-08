@@ -2,7 +2,7 @@ import { authPassword, deriveKEK, inviteKey, importDataKey, encryptBytes, decryp
 import { createBackend } from './backend.js';
 import { MESES, MESES_LONGOS, WISH_LISTS, EXTRA_COLORS, templateItems, val, isPaid, r2, monthStats, yearStats, parsePlanilha } from './data.js';
 import { brl, donut, hbars, timeChart, gauge } from './charts.js';
-import { analyze, parseQuick } from './insights.js';
+import { analyze, parseQuick, incomeStats } from './insights.js';
 import { BUY_CATS, catOf, categorize, parseItems, parcelIn, parcelIdx, monthsOf, isoToday } from './buys.js';
 import { ETAPAS, OBRA_KINDS, kindOf, PAYS, payLabel, guessKind, guessEtapa, parseObra, obraStats, terrenoParcelas } from './obra.js';
 
@@ -112,7 +112,8 @@ async function start() {
   catch (e) { app.innerHTML = `<section class="card narrow"><h2>Não consegui carregar</h2><p>${esc(errMsg(e))}</p></section>`; return; }
   $('#mode').textContent = S.be.remote ? '🔒 criptografado' : 'modo teste · só neste aparelho';
   $('#mode').classList.toggle('warn', !S.be.remote);
-  route();
+  try { await route(); }
+  catch (e) { app.innerHTML = `<section class="card narrow center"><h2>Não consegui conectar</h2><p class="muted">${esc(errMsg(e))}</p><button class="btn" id="retry">Tentar de novo</button></section>`; $('#retry').addEventListener('click', () => location.reload()); }
 }
 
 async function route() {
@@ -208,6 +209,7 @@ function viewHousehold() {
       const hid = crypto.randomUUID(), raw = randomBytes(32);
       const mine = await wrapForMe(hid, raw, getPw(f));
       await S.be.createHousehold(hid, mine);
+      S.mem = { household_id: hid, ...mine };
       S.hid = hid; S.dkRaw = raw; S.dk = await importDataKey(raw); S.pw = null;
       const p1 = f.me.value.trim(), p2 = f.par.value.trim();
       await saveMany([{ type: 'settings', p1, p2, people: { [S.user.id]: p1 } }, ...templateItems(p1, p2)], 'criou o cofre');
@@ -230,6 +232,7 @@ function viewHousehold() {
       catch { throw new Error('Código do convite inválido.'); }
       const mine = await wrapForMe(hid, raw, getPw(f));
       await S.be.setMyKey(hid, mine.kek_salt, mine.wrapped_key);
+      S.mem = { household_id: hid, ...mine };
       await S.be.setInvite(hid, null);
       S.hid = hid; S.dkRaw = raw; S.dk = await importDataKey(raw); S.pw = null;
       await load();
@@ -278,15 +281,26 @@ function startSync() {
         if (prev && prev._at === obj._at && prev._by === obj._by) return; // já tenho
         S.items.set(r.id, { ...obj, id: r.id, _u: r.updated_at });
         if (obj._by && obj._by !== S.user.id) {
-          toast(`🔔 ${nameOf(obj._by)} ${obj._what || 'atualizou ' + (obj.name || 'um item')}`, 4000);
+          notify(`${nameOf(obj._by)} ${obj._what || 'atualizou ' + (obj.name || 'um item')}`, obj._at);
           S.flash.add(r.id); scheduleRender();
         }
       } catch { /* inválido */ }
     },
-    onDelete: (id) => { if (id && S.items.has(id)) { S.items.delete(id); toast(`🔔 ${partnerName()} removeu um item`); scheduleRender(); } },
+    onDelete: (id) => { if (id && S.items.has(id)) { S.items.delete(id); notify(`${partnerName()} removeu um item`, 'del'); scheduleRender(); } },
     onPresence: (ids) => { S.online = ids.filter(i => i !== S.user.id); paintPresence(); },
     onStatus: (ok) => { S.live = ok; paintPresence(); }
   });
+}
+// junta avisos que chegam em sequência (ex.: importação de planilha) num aviso só
+const N = { msgs: new Map(), t: null };
+function notify(msg, key) {
+  N.msgs.set(String(key ?? msg) + msg, msg);
+  clearTimeout(N.t);
+  N.t = setTimeout(() => {
+    const list = [...new Set(N.msgs.values())]; N.msgs.clear();
+    const main = [...list].reverse().find(x => !/removeu um item$/.test(x)) || list[list.length - 1];
+    toast(`🔔 ${main}${list.length > 1 ? ` (+${list.length - 1} mudança${list.length > 2 ? 's' : ''})` : ''}`, 4500);
+  }, 350);
 }
 function stopSync() { try { S.unsub?.(); } catch {} S.unsub = null; S.live = false; S.online = []; paintPresence(); }
 function paintPresence() {
@@ -296,10 +310,15 @@ function paintPresence() {
   el.textContent = S.online.length ? `🟢 ${partnerName()} online` : S.live ? '🔒 ao vivo' : '🔒 criptografado';
 }
 const typing = () => { const a = document.activeElement; return a && app.contains(a) && /INPUT|SELECT|TEXTAREA/.test(a.tagName); };
+let renderT = null;
 function scheduleRender() {
   if (!S.dk) return;
-  if (typing()) { S.pending = true; return; }
-  S.pending = false; const y = scrollY; viewMain(); scrollTo(0, y);
+  clearTimeout(renderT);
+  renderT = setTimeout(() => {
+    if (!S.dk) return;
+    if (typing()) { S.pending = true; return; }
+    S.pending = false; const y = scrollY; viewMain(); scrollTo(0, y);
+  }, 120);
 }
 document.addEventListener('focusout', () => setTimeout(() => { if (S.pending && !typing()) scheduleRender(); }, 250));
 function applyFlash(root) {
@@ -444,6 +463,16 @@ function tabPainel(root) {
     ${chartToggle('bcat', [['rosca', 'Rosca'], ['barras', 'Barras']], chartPref('bcat', 'rosca'))}
   </section>` : ''}
 
+  ${(() => { const inc = incomeStats(model, S.month, 12); if (!inc || inc.n < 2) return '';
+    const ms = Array.from({ length: 12 }, (_, i) => shiftMonth(S.month, i - 11)).filter(x => monthStats(model, x).renda > 0 || x === S.month);
+    const vs = ms.map(x => monthStats(model, x).renda);
+    return `<section class="card">
+    <div class="card-h"><h3>Como a renda variou</h3><span class="muted small">${inc.variable ? 'renda variável' : 'renda estável'}</span></div>
+    <div class="kpis three"><div class="kpi"><small>Mês mais fraco</small><b>${brl(inc.min)}</b></div><div class="kpi"><small>Média</small><b>${brl(inc.avg)}</b></div><div class="kpi"><small>Mês mais forte</small><b>${brl(inc.max)}</b></div></div>
+    ${timeChart(ms.map(mShort), [{ name: 'Renda', color: '#6B7B45', values: vs }], 'line', { name: 'Média', color: '#B8954A', values: ms.map(() => inc.avg) })}
+    <p class="muted small">Dica: planejem as contas fixas pelo mês mais fraco. O que entrar acima disso vai para a reserva ou para a obra.</p>
+  </section>`; })()}
+
   <section class="card">
     <div class="card-h"><h3>Ano ${year}: entrou x saiu</h3>${chartToggle('ano', [['bar', 'Colunas'], ['line', 'Linhas']], pAno)}</div>
     ${timeChart(labels, [{ name: 'Renda', color: '#6B7B45', values: ys.map(s => s.renda) }, { name: 'Despesas', color: '#B5714E', values: ys.map(s => s.despesas) }], pAno, { name: 'Saldo acumulado', color: '#B8954A', values: ys.map(s => s.acumulado) })}
@@ -587,11 +616,13 @@ function tabOrcamento(root) {
       <summary><span class="dot" style="background:${g.color}"></span>
         ${S.edit ? `<input class="gname" data-gname="${esc(g.id)}" value="${esc(g.name)}" maxlength="40">` : `<span class="gn">${esc(g.name)}</span>`}
         <b class="gt" data-gt="${esc(g.id)}">${brl(tot?.total)}</b></summary>
+      ${g.kind === 'renda' ? (() => { const inc = incomeStats(model, S.month); const rec = r2(lines.reduce((s, l) => s + (isPaid(l, S.month) ? val(l, S.month) : 0), 0));
+        return `<p class="muted small inc-note">${tot?.total ? `Já recebido: <b>${brl(rec)}</b> de ${brl(tot.total)}. ` : ''}${inc?.variable ? `Nos últimos ${inc.n} meses a renda foi de ${brl(inc.min)} a ${brl(inc.max)} (média ${brl(inc.avg)}).` : ''} Lance o valor quando o dinheiro cair; renda variável não é copiada automaticamente.</p>`; })() : ''}
       <div class="lines">
       ${lines.map(l => `<div class="ln">
           ${S.edit ? `<input class="lname" data-lname="${esc(l.id)}" value="${esc(l.name)}" maxlength="50">` : `<span class="ln-n">${esc(l.name)}</span>`}
           ${moneyInput(l, S.month)}
-          ${g.kind === 'renda' ? '<span class="paid-sp"></span>' : `<label class="paid" title="Pago"><input type="checkbox" data-paid="${esc(l.id)}" ${isPaid(l, S.month) ? 'checked' : ''}><span>pago</span></label>`}
+          <label class="paid" title="${g.kind === 'renda' ? 'Recebido' : 'Pago'}"><input type="checkbox" data-paid="${esc(l.id)}" ${isPaid(l, S.month) ? 'checked' : ''}><span>${g.kind === 'renda' ? 'recebido' : 'pago'}</span></label>
           ${S.edit ? `<button class="icon del" data-ldel="${esc(l.id)}" aria-label="Excluir linha">✕</button>` : ''}
         </div>`).join('')}
       ${S.edit ? `<form class="addline row" data-addline="${esc(g.id)}"><input name="n" placeholder="+ nova linha em ${esc(g.name)}" maxlength="50" required><button class="btn small">Adicionar</button></form>
@@ -617,9 +648,9 @@ function tabOrcamento(root) {
   $('#edit', root).addEventListener('click', () => { S.edit = !S.edit; viewMain(); });
   $('#copyprev', root).addEventListener('click', async () => {
     const pm = shiftMonth(S.month, -1);
-    const lines = [...S.items.values()].filter(i => i.type === 'line' && val(i, pm) && !val(i, S.month));
+    const lines = [...S.items.values()].filter(i => i.type === 'line' && val(i, pm) && !val(i, S.month) && model.groupOf(i)?.kind !== 'renda');
     if (!lines.length) return toast(`Nada para copiar (os valores de ${mShort(pm)} já estão aqui ou estão vazios).`);
-    if (!confirm(`Copiar ${lines.length} valor(es) de ${mShort(pm)} para ${mShort(S.month)}? (Só preenche o que está vazio, sem marcar como pago.)`)) return;
+    if (!confirm(`Copiar ${lines.length} valor(es) de ${mShort(pm)} para ${mShort(S.month)}? (Só preenche o que está vazio, sem marcar como pago. A renda não é copiada, porque varia.)`)) return;
     try { await saveMany(lines.map(l => ({ ...l, vals: { ...l.vals, [S.month]: { v: val(l, pm), p: false } } })), `copiou os valores de ${mShort(pm)} para ${mShort(S.month)}`); viewMain(); toast('Valores copiados!'); }
     catch (e) { toast(errMsg(e)); }
   });
@@ -1193,7 +1224,7 @@ function tabCasamento(root) {
       <ul class="wl">${ws.map(w => `<li class="${w.done ? 'done' : ''}">
         <label class="chk"><input type="checkbox" data-wdone="${esc(w.id)}" ${w.done ? 'checked' : ''}><span></span></label>
         <div class="wl-m"><span>${esc(w.name)}</span>${w.note ? `<small class="muted">${esc(w.note)}</small>` : ''}</div>
-        ${w.link ? `<a href="${esc(w.link)}" target="_blank" rel="noopener noreferrer" class="wl-link" aria-label="Abrir link">🔗</a>` : ''}
+        ${/^https?:\/\//i.test(w.link || '') ? `<a href="${esc(w.link)}" target="_blank" rel="noopener noreferrer" class="wl-link" aria-label="Abrir link">🔗</a>` : ''}
         <input class="money sm" inputmode="decimal" data-wprice="${esc(w.id)}" value="${w.price ? num(w.price) : ''}" placeholder="R$">
         <button class="icon del" data-wdel="${esc(w.id)}" aria-label="Excluir">✕</button>
       </li>`).join('')}</ul>
@@ -1259,7 +1290,76 @@ async function tabAjustes(root) {
       <button class="btn small ghost" id="logout">Sair</button>
     </div>
     <p class="muted small">Tranca sozinho após 10 min sem uso. O CSV baixado não é criptografado — guarde com cuidado.</p>
+  </section>
+  <section class="card">
+    <h3>Backup criptografado</h3>
+    <p class="muted small">Uma cópia de tudo (orçamento, cartões, gastos, obra, terreno, listas), protegida por uma senha de backup. Guardem o arquivo no Google Drive ou no e-mail, uma vez por mês. Se algo acontecer com o servidor, dá para restaurar tudo.</p>
+    <form id="f-bkp" class="grid">
+      <label class="full">Senha do backup (mín. 8)<input name="pw" type="password" minlength="8" autocomplete="new-password" required></label>
+      <button class="btn small full">Baixar backup</button>
+    </form>
+    <details class="more"><summary>Restaurar um backup</summary>
+      <form id="f-rst" class="grid">
+        <label class="full">Arquivo de backup<input name="file" type="file" accept=".json,application/json" required></label>
+        <label class="full">Senha do backup<input name="pw" type="password" autocomplete="off" required></label>
+        <button class="btn small ghost full">Restaurar</button>
+      </form>
+    </details>
+  </section>
+  <section class="card">
+    <h3>Trocar minha senha</h3>
+    <form id="f-pw" class="grid">
+      <label class="full">Senha atual<input name="cur" type="password" autocomplete="current-password" required></label>
+      <label>Nova senha<input name="n1" type="password" minlength="8" autocomplete="new-password" required></label>
+      <label>Repita a nova<input name="n2" type="password" minlength="8" autocomplete="new-password" required></label>
+      <button class="btn small full">Trocar senha</button>
+    </form>
+    <p class="muted small">Troca só a sua senha. A do seu par continua a mesma.</p>
   </section>`;
+
+  $('#f-bkp', root).addEventListener('submit', async (ev) => {
+    ev.preventDefault(); const b = $('button', ev.target); busy(b, true, 'Criptografando…');
+    try {
+      const salt = newSalt(), key = await deriveKEK(ev.target.pw.value, salt);
+      const items = [...S.items.values()].map(({ _u, ...x }) => x);
+      const box = await encryptJSON(key, { items, at: Date.now() }, 'backup:nossas-financas');
+      const blob = new Blob([JSON.stringify({ app: 'nossas-financas', v: 1, salt, ...box })], { type: 'application/json' });
+      const d = new Date(), aEl = document.createElement('a');
+      aEl.href = URL.createObjectURL(blob); aEl.download = `backup-nossas-financas-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}.json`; aEl.click();
+      setTimeout(() => URL.revokeObjectURL(aEl.href), 1000); ev.target.reset(); toast(`Backup gerado com ${items.length} itens.`);
+    } catch (e) { toast(errMsg(e)); }
+    busy(b, false);
+  });
+  $('#f-rst', root).addEventListener('submit', async (ev) => {
+    ev.preventDefault(); const f = ev.target, b = $('button', f); busy(b, true, 'Lendo…');
+    try {
+      const j = JSON.parse(await f.file.files[0].text());
+      if (j.app !== 'nossas-financas') throw new Error('Esse arquivo não é um backup do app.');
+      let data; try { data = await decryptJSON(await deriveKEK(f.pw.value, j.salt), j, 'backup:nossas-financas'); } catch { throw new Error('Senha do backup incorreta.'); }
+      if (!confirm(`Restaurar ${data.items.length} itens do backup de ${new Date(data.at).toLocaleDateString('pt-BR')}? Itens iguais são substituídos pela versão do backup; o que foi criado depois continua.`)) { busy(b, false); return; }
+      busy(b, true, 'Restaurando…');
+      await saveMany(data.items, 'restaurou um backup'); toast('Backup restaurado!'); viewMain();
+    } catch (e) { toast(errMsg(e), 5000); busy(b, false); }
+  });
+  $('#f-pw', root).addEventListener('submit', async (ev) => {
+    ev.preventDefault(); const f = ev.target, b = $('button', f);
+    if (f.n1.value !== f.n2.value) return toast('As novas senhas não conferem.');
+    busy(b, true, 'Trocando…');
+    const old = { ...S.mem };
+    try {
+      // confere a senha atual
+      const kek = await deriveKEK(f.cur.value, S.mem.kek_salt);
+      await decryptBytes(kek, JSON.parse(S.mem.wrapped_key), aadDK(S.hid, S.user.id));
+    } catch { busy(b, false); return toast('Senha atual incorreta.'); }
+    try {
+      const mine = await wrapForMe(S.hid, S.dkRaw, f.n1.value);
+      await S.be.setMyKey(S.hid, mine.kek_salt, mine.wrapped_key);
+      try { await S.be.updatePassword(await authPassword(S.user.email, f.n1.value)); }
+      catch (e) { await S.be.setMyKey(S.hid, old.kek_salt, old.wrapped_key); throw e; } // desfaz se o login não trocou
+      S.mem = { ...S.mem, ...mine }; f.reset(); toast('Senha trocada! Use a nova a partir de agora.', 5000);
+    } catch (e) { toast(errMsg(e), 5000); }
+    busy(b, false);
+  });
 
   $('#f-names', root).addEventListener('submit', async (ev) => {
     ev.preventDefault();
@@ -1314,8 +1414,22 @@ async function doImport(ev, root) {
     if (!confirm(`Encontrei: ${parts.join(' e ')}.\n\nIsso SUBSTITUI o que está no app hoje nessas partes. Continuar?`)) { busy(b, false); return; }
     busy(b, true, 'Criptografando e salvando…');
     const keepObra = (i) => i.sys || (i.type === 'group' && i.key === 'obra');
-    const old = [...S.items.values()].filter(i => (f.orc.checked && (i.type === 'group' || i.type === 'line') && !keepObra(i)) || (f.cas.checked && i.type === 'wish')).map(i => i.id);
+    // Cartões que já existem no app continuam os mesmos (mantêm gastos detalhados, limite e vencimento)
+    const keep = new Set();
+    if (f.orc.checked) {
+      const nn = (t) => String(t).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+      const ng = res.items.find(i => i.type === 'group' && i.kind === 'cartao');
+      const oldCards = model.cards;
+      if (ng) {
+        const newCards = res.items.filter(i => i.type === 'line' && i.group === ng.id);
+        newCards.forEach(l => { const o = oldCards.find(c => nn(c.name) === nn(l.name)); if (o) { l.id = o.id; l.limit = o.limit; l.due = o.due; keep.add(o.id); } });
+        oldCards.filter(c => !keep.has(c.id) && model.buysOf(c.id).length).forEach(c => { res.items.push({ ...c, group: ng.id }); keep.add(c.id); });
+        res.items.filter(i => i.type === 'line' && i.group === ng.id).forEach(l => { const bs = model.buysOf(l.id); if (bs.length) Object.assign(l, cardWithSums(l, bs.flatMap(monthsOf), bs)); });
+      } else if (oldCards.length) { keep.add(model.cardGroup.id); oldCards.forEach(c => keep.add(c.id)); }
+    }
     const neu = [...(f.orc.checked ? res.items : []), ...(f.cas.checked ? res.wishes : [])];
+    const neuIds = new Set(neu.map(i => i.id));
+    const old = [...S.items.values()].filter(i => (f.orc.checked && (i.type === 'group' || i.type === 'line') && !keepObra(i) && !keep.has(i.id)) || (f.cas.checked && i.type === 'wish')).map(i => i.id).filter(id => !neuIds.has(id));
     await saveMany(neu, 'importou a planilha');
     await removeMany(old);
     $('#imp-msg', root).innerHTML = `<p class="ok">✅ Importado! Meses anteriores a ${mLabel(nowMonth())} foram marcados como pagos — ajuste no Orçamento se precisar.</p>
@@ -1352,7 +1466,7 @@ async function refresh() {
   if (!S.dk || !S.be?.remote || S.live) return;
   const a = document.activeElement;
   if (a && /INPUT|SELECT|TEXTAREA/.test(a.tagName)) return; // não atrapalha quem está digitando
-  try { await load(); viewMain(); } catch {}
+  try { await load(); scheduleRender(); } catch {}
 }
 document.addEventListener('visibilitychange', async () => {
   // ao voltar para o app (ex.: celular estava bloqueado), garante que está tudo atualizado

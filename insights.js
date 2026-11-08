@@ -4,6 +4,7 @@ import { brl } from './charts.js';
 
 const shift = (m, k) => { const [y, mo] = m.split('-').map(Number); const d = new Date(y, mo - 1 + k, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
 const mName = (m) => MESES_LONGOS[Number(m.slice(5)) - 1].toLowerCase();
+const esc = (t) => String(t ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const avg = (a) => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0);
 export const norm = (s) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
 
@@ -16,12 +17,24 @@ export function recurring(model, m) {
   }).filter(x => x.n >= 2);
 }
 
+// Renda variável: olha os últimos 6 meses com renda e mede o mês mais fraco, a média e o mais forte
+export function incomeStats(model, m, n = 6) {
+  const months = Array.from({ length: n }, (_, k) => shift(m, -(k + 1)));
+  const vals = months.map(x => monthStats(model, x).renda).filter(v => v > 0);
+  if (!vals.length) return null;
+  const mn = Math.min(...vals), mx = Math.max(...vals), a = avg(vals);
+  const sd = Math.sqrt(avg(vals.map(v => (v - a) ** 2)));
+  return { min: r2(mn), max: r2(mx), avg: r2(a), n: vals.length, variable: vals.length >= 2 && sd / a > 0.08 };
+}
+
 export function forecast(model, m) {
   const rec = recurring(model, m);
   const kindOf = (l) => model.groupOf(l)?.kind;
-  const renda = r2(rec.filter(x => kindOf(x.l) === 'renda').reduce((s, x) => s + x.est, 0));
   const despesas = r2(rec.filter(x => kindOf(x.l) !== 'renda').reduce((s, x) => s + x.est, 0));
-  return { renda, despesas, saldo: r2(renda - despesas) };
+  const inc = incomeStats(model, m);
+  // previsão prudente: usa o mês mais fraco de renda dos últimos meses
+  const renda = inc ? inc.min : r2(rec.filter(x => kindOf(x.l) === 'renda').reduce((s, x) => s + x.est, 0));
+  return { renda, rendaMax: inc?.max ?? renda, rendaAvg: inc?.avg ?? renda, variable: !!inc?.variable, despesas, saldo: r2(renda - despesas), saldoMax: r2((inc?.max ?? renda) - despesas) };
 }
 
 export function analyze(model, m, today = new Date()) {
@@ -32,8 +45,8 @@ export function analyze(model, m, today = new Date()) {
   let score = 100;
 
   // 1) Saldo do mês
-  if (st.despesas && st.saldo < 0) {
-    const top = st.byGroup.filter(x => x.g.kind !== 'renda' && x.total > 0).sort((a, b) => b.total - a.total).slice(0, 2).map(x => x.g.name).join(' e ');
+  if (st.renda > 0 && st.despesas && st.saldo < 0) {
+    const top = st.byGroup.filter(x => x.g.kind !== 'renda' && x.total > 0).sort((a, b) => b.total - a.total).slice(0, 2).map(x => esc(x.g.name)).join(' e ');
     out.push({ level: 'bad', icon: '🚨', text: `As despesas passam a renda em <b>${brl(-st.saldo)}</b>. Os maiores pesos são ${top}.` });
     score -= 40;
   } else if (st.renda && st.saldo / st.renda < 0.05 && st.despesas) {
@@ -44,9 +57,19 @@ export function analyze(model, m, today = new Date()) {
     out.push({ level: 'good', icon: '💚', text: `Vocês estão guardando <b>${p}% da renda</b>. Sugestão: separar <b>${brl(Math.floor(st.saldo / 2 / 10) * 10)}</b> (metade da sobra) para a casa ou investimentos assim que o salário cair.` });
   }
 
-  // 2) Renda não lançada
+  // 2) Renda não lançada / renda variável
+  const inc = incomeStats(model, m);
   if (!st.renda && prevSt.renda && st.despesas) {
-    out.push({ level: 'info', icon: '💰', text: `A renda de ${mName(m)} ainda não foi lançada (no mês passado foi ${brl(prevSt.renda)}).` });
+    out.push({ level: 'info', icon: '💰', text: `A renda de ${mName(m)} ainda não foi lançada${inc?.variable ? ` (nos últimos meses variou de ${brl(inc.min)} a ${brl(inc.max)})` : ` (no mês passado foi ${brl(prevSt.renda)})`}.` });
+  }
+  if (inc?.variable) {
+    const fixas = r2(recurring(model, m).filter(x => model.groupOf(x.l)?.kind !== 'renda').reduce((s, x) => s + x.est, 0));
+    const folga = r2(inc.min - fixas);
+    out.push({ level: folga < 0 ? 'warn' : 'info', icon: '〰️', text: `A renda de vocês varia: de <b>${brl(inc.min)}</b> (mês mais fraco) a <b>${brl(inc.max)}</b> nos últimos ${inc.n} meses (média ${brl(inc.avg)}). ` +
+      (folga >= 0 ? `Mesmo no mês mais fraco, as contas que se repetem (~${brl(fixas)}) cabem. O que vier acima de ${brl(inc.min)} pode ir direto para a reserva ou para a obra.`
+                  : `No mês mais fraco, as contas que se repetem (~${brl(fixas)}) passariam a renda em ${brl(-folga)}. Vale ter uma reserva de pelo menos esse valor.`) });
+    if (st.renda && st.renda < inc.avg * 0.85) out.push({ level: 'warn', icon: '📉', text: `A renda de ${mName(m)} (${brl(st.renda)}) está <b>${Math.round((1 - st.renda / inc.avg) * 100)}% abaixo</b> da média dos últimos meses.` });
+    if (st.renda && st.renda > inc.avg * 1.15) out.push({ level: 'good', icon: '📈', text: `A renda de ${mName(m)} (${brl(st.renda)}) veio <b>${Math.round((st.renda / inc.avg - 1) * 100)}% acima</b> da média. Boa hora para reforçar a reserva.` });
   }
 
   // 3) Cartões: vencimento, limite e aumento fora do normal
@@ -55,14 +78,14 @@ export function analyze(model, m, today = new Date()) {
     const paid = isPaid(c, m);
     if (isCurrent && c.due && !paid) {
       const days = Number(c.due) - today.getDate();
-      if (days < 0) { out.push({ level: 'bad', icon: '⏰', text: `A fatura do <b>${c.name}</b> (${brl(v)}) venceu dia ${c.due} e não está marcada como paga.` }); score -= 20; }
-      else if (days <= 5) { out.push({ level: 'warn', icon: '📅', text: `A fatura do <b>${c.name}</b> (${brl(v)}) vence ${days === 0 ? '<b>hoje</b>' : `em <b>${days} dia${days > 1 ? 's' : ''}</b>`}.` }); score -= 5; }
+      if (days < 0) { out.push({ level: 'bad', icon: '⏰', text: `A fatura do <b>${esc(c.name)}</b> (${brl(v)}) venceu dia ${c.due} e não está marcada como paga.` }); score -= 20; }
+      else if (days <= 5) { out.push({ level: 'warn', icon: '📅', text: `A fatura do <b>${esc(c.name)}</b> (${brl(v)}) vence ${days === 0 ? '<b>hoje</b>' : `em <b>${days} dia${days > 1 ? 's' : ''}</b>`}.` }); score -= 5; }
     }
-    if (c.limit && v / c.limit >= 0.8) { out.push({ level: 'warn', icon: '💳', text: `O <b>${c.name}</b> está com <b>${Math.round(v / c.limit * 100)}% do limite</b> usado.` }); score -= 10; }
+    if (c.limit && v / c.limit >= 0.8) { out.push({ level: 'warn', icon: '💳', text: `O <b>${esc(c.name)}</b> está com <b>${Math.round(v / c.limit * 100)}% do limite</b> usado.` }); score -= 10; }
     const hist = [1, 2, 3].map(k => val(c, shift(m, -k))).filter(x => x > 0);
     const a = avg(hist);
     if (hist.length >= 2 && v > a * 1.25 && v - a > 100) {
-      out.push({ level: 'warn', icon: '📈', text: `A fatura do <b>${c.name}</b> está <b>${Math.round((v / a - 1) * 100)}% acima</b> da média dos últimos meses (+${brl(v - a)}).` });
+      out.push({ level: 'warn', icon: '📈', text: `A fatura do <b>${esc(c.name)}</b> está <b>${Math.round((v / a - 1) * 100)}% acima</b> da média dos últimos meses (+${brl(v - a)}).` });
       score -= 5;
     }
   }
@@ -72,15 +95,16 @@ export function analyze(model, m, today = new Date()) {
     if (x.g.kind === 'renda' || x.g.kind === 'cartao' || !x.total) continue;
     const hist = [1, 2, 3].map(k => monthStats(model, shift(m, -k)).byGroup.find(y => y.g.id === x.g.id)?.total || 0).filter(v => v > 0);
     const a = avg(hist);
-    if (hist.length >= 2 && x.total > a * 1.2 && x.total - a > 150) out.push({ level: 'info', icon: '🔎', text: `<b>${x.g.name}</b> está ${Math.round((x.total / a - 1) * 100)}% acima do normal (${brl(x.total)} contra média de ${brl(a)}).` });
+    if (hist.length >= 2 && x.total > a * 1.2 && x.total - a > 150) out.push({ level: 'info', icon: '🔎', text: `<b>${esc(x.g.name)}</b> está ${Math.round((x.total / a - 1) * 100)}% acima do normal (${brl(x.total)} contra média de ${brl(a)}).` });
   }
 
   // 5) Contas fixas ainda não lançadas no mês
-  const missing = recurring(model, m).filter(x => !val(x.l, m) && x.last > 0);
+  // a renda fica de fora: ela varia e só se lança quando cair
+  const missing = recurring(model, m).filter(x => !val(x.l, m) && x.last > 0 && model.groupOf(x.l)?.kind !== 'renda');
   if (missing.length) {
     out.push({
       level: 'info', icon: '🪄', action: 'fill',
-      text: `${missing.length} conta${missing.length > 1 ? 's' : ''} que se repete${missing.length > 1 ? 'm' : ''} todo mês ainda não ${missing.length > 1 ? 'estão' : 'está'} em ${mName(m)} (${missing.slice(0, 3).map(x => x.l.name).join(', ')}${missing.length > 3 ? '…' : ''}).`,
+      text: `${missing.length} conta${missing.length > 1 ? 's' : ''} que se repete${missing.length > 1 ? 'm' : ''} todo mês ainda não ${missing.length > 1 ? 'estão' : 'está'} em ${mName(m)} (${missing.slice(0, 3).map(x => esc(x.l.name)).join(', ')}${missing.length > 3 ? '…' : ''}).`,
       fill: missing.map(x => ({ id: x.l.id, v: x.last }))
     });
   }
@@ -92,7 +116,9 @@ export function analyze(model, m, today = new Date()) {
   // 7) Previsão do próximo mês
   const fc = forecast(model, shift(m, 1));
   if (fc.renda || fc.despesas) {
-    out.push({ level: fc.saldo >= 0 ? 'info' : 'warn', icon: '🔮', text: `Previsão para ${mName(shift(m, 1))} (pelas contas que se repetem): renda ~${brl(fc.renda)}, despesas ~${brl(fc.despesas)} → ${fc.saldo >= 0 ? 'sobra' : 'falta'} <b>~${brl(Math.abs(fc.saldo))}</b>.` });
+    out.push({ level: fc.saldo >= 0 ? 'info' : 'warn', icon: '🔮', text: fc.variable && fc.rendaMax > fc.renda
+      ? `Previsão para ${mName(shift(m, 1))}: despesas ~${brl(fc.despesas)}. Com a renda variando entre ${brl(fc.renda)} e ${brl(fc.rendaMax)}, deve ${fc.saldo >= 0 ? 'sobrar' : 'ficar entre faltar'} <b>${fc.saldo >= 0 ? `de ${brl(fc.saldo)} a ${brl(fc.saldoMax)}` : `${brl(-fc.saldo)} e ${fc.saldoMax >= 0 ? `sobrar ${brl(fc.saldoMax)}` : `faltar ${brl(-fc.saldoMax)}`}`}</b>.`
+      : `Previsão para ${mName(shift(m, 1))} (pelas contas que se repetem): renda ~${brl(fc.renda)}, despesas ~${brl(fc.despesas)} → ${fc.saldo >= 0 ? 'sobra' : 'falta'} <b>~${brl(Math.abs(fc.saldo))}</b>.` });
   }
 
   // 8) Casamento: em quanto tempo dá para comprar o que falta

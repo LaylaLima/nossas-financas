@@ -21,6 +21,7 @@ async function supabaseBackend(cfg) {
     async signIn(email, pw) { chk(await sb.auth.signInWithPassword({ email, password: pw })); },
     async signUp(email, pw) { const d = chk(await sb.auth.signUp({ email, password: pw })); return !!d.session; },
     async signOut() { await sb.auth.signOut(); uid = null; },
+    async updatePassword(pw) { chk(await sb.auth.updateUser({ password: pw })); },
 
     async myMembership() {
       const rows = chk(await sb.from('members').select('household_id,kek_salt,wrapped_key').eq('user_id', uid).limit(1));
@@ -61,9 +62,10 @@ async function supabaseBackend(cfg) {
     // Tempo real: avisa na hora quando o outro muda algo e quem está online
     subscribe(hid, { onRow, onDelete, onPresence, onStatus }) {
       const ch = sb.channel('hh-' + hid, { config: { presence: { key: uid } } })
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'items', filter: `household_id=eq.${hid}` }, (p) => {
-          if (p.eventType === 'DELETE') onDelete(p.old?.id); else onRow(p.new);
-        })
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'items', filter: `household_id=eq.${hid}` }, (p) => onRow(p.new))
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'items', filter: `household_id=eq.${hid}` }, (p) => onRow(p.new))
+        // exclusões não aceitam filtro no Supabase: chega só o id, e o app ignora ids que não são do cofre
+        .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'items' }, (p) => onDelete(p.old?.id))
         .on('presence', { event: 'sync' }, () => onPresence(Object.keys(ch.presenceState())))
         .subscribe(async (status) => {
           onStatus?.(status === 'SUBSCRIBED');
@@ -99,6 +101,7 @@ function localBackend() {
       db.users[k] = { id: crypto.randomUUID(), pw, email: k }; db.session = db.users[k].id; write(db); return true;
     },
     async signOut() { const db = read(); db.session = null; write(db); },
+    async updatePassword(pw) { const db = read(); const u = Object.values(db.users).find(x => x.id === db.session); u.pw = pw; write(db); },
     async myMembership() { const db = read(); return db.members.find(m => m.user_id === db.session) || null; },
     async createHousehold(hid, mine) {
       const db = read(); db.households[hid] = { id: hid, invite_wrap: null };
